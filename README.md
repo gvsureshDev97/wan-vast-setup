@@ -1,0 +1,1 @@
+curl -fsSL https://raw.githubusercontent.com/gvsureshDev97/wan-vast-setup/main/install-wan-2.2-14B.sh | bash
