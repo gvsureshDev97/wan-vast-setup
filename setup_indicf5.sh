@@ -1,4 +1,3 @@
-cat > /workspace/setup_indicf5.sh <<'SH'
 #!/bin/bash
 set -e
 
@@ -8,146 +7,212 @@ echo "=========================================="
 
 cd /workspace
 
-# ------------------------------------------------
-# 1. Check GPU
-# ------------------------------------------------
+# ============================================================
+# 1. GPU CHECK
+# ============================================================
+
 echo ""
-echo "[1/8] Checking GPU..."
+echo "[1/7] Checking GPU..."
+
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
-# ------------------------------------------------
-# 2. Create virtual environment
-# ------------------------------------------------
-echo ""
-echo "[2/8] Creating Python environment..."
+# ============================================================
+# 2. PYTHON ENVIRONMENT
+# ============================================================
 
-python3 -m venv /workspace/indicf5_env
+echo ""
+echo "[2/7] Creating Python environment..."
+
+if [ ! -d "/workspace/indicf5_env" ]; then
+    python3 -m venv /workspace/indicf5_env
+fi
+
 source /workspace/indicf5_env/bin/activate
 
 python -m pip install --upgrade pip setuptools wheel
 
-# ------------------------------------------------
-# 3. Install PyTorch for RTX 5090
-# ------------------------------------------------
-echo ""
-echo "[3/8] Installing PyTorch..."
+# ============================================================
+# 3. PYTORCH
+# ============================================================
 
-pip install --upgrade \
-  torch==2.11.0 \
-  torchvision==0.26.0 \
-  torchaudio==2.11.0 \
-  --index-url https://download.pytorch.org/whl/cu128
-
-# ------------------------------------------------
-# 4. Install IndicF5
-# ------------------------------------------------
 echo ""
-echo "[4/8] Installing IndicF5..."
+echo "[3/7] Installing PyTorch..."
+
+pip install \
+    torch==2.11.0 \
+    torchvision==0.26.0 \
+    torchaudio==2.11.0 \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# ============================================================
+# 4. INDICF5
+# ============================================================
+
+echo ""
+echo "[4/7] Installing IndicF5..."
 
 pip install git+https://github.com/ai4bharat/IndicF5.git
 
-# ------------------------------------------------
-# 5. Hugging Face login
-# ------------------------------------------------
-echo ""
-echo "[5/8] Hugging Face setup..."
+# ============================================================
+# 5. HUGGING FACE LOGIN
+# ============================================================
 
 echo ""
-echo "IMPORTANT:"
-echo "You need Hugging Face access to ai4bharat/IndicF5."
+echo "[5/7] Hugging Face authentication"
+echo ""
+echo "Make sure you have access to:"
+echo "ai4bharat/IndicF5"
 echo ""
 echo "Run:"
-echo "  hf auth login"
+echo "hf auth login"
 echo ""
-read -p "Press ENTER after Hugging Face login is complete..."
 
-# ------------------------------------------------
-# 6. Download IndicF5
-# ------------------------------------------------
+hf auth whoami || {
+    echo ""
+    echo "Please login to Hugging Face."
+    hf auth login
+}
+
+# ============================================================
+# 6. DOWNLOAD INDICF5
+# ============================================================
+
 echo ""
-echo "[6/8] Downloading IndicF5..."
+echo "[6/7] Downloading IndicF5..."
+
+rm -rf /workspace/IndicF5
 
 mkdir -p /workspace/IndicF5
 
 hf download ai4bharat/IndicF5 \
-  --local-dir /workspace/IndicF5
+    --local-dir /workspace/IndicF5
 
-# ------------------------------------------------
-# 7. Patch IndicF5 for PyTorch 2.11
-# ------------------------------------------------
+# ============================================================
+# 7. APPLY PYTORCH 2.11 COMPATIBILITY PATCH
+# ============================================================
+
 echo ""
-echo "[7/8] Applying IndicF5 compatibility patch..."
+echo "[7/7] Applying IndicF5 compatibility patch..."
 
 cd /workspace/IndicF5
 
 cp model.py model.py.original
 
 python - <<'PY'
+
 p = "/workspace/IndicF5/model.py"
 
-s = open(p).read()
+with open(p, "r") as f:
+    s = f.read()
 
-# Initialize Vocos on CPU to avoid the PyTorch 2.11 meta-tensor issue
-s = s.replace(
-    'self.vocoder = torch.compile(load_vocoder(vocoder_name="vocos", is_local=False, device=device))',
-    'self.vocoder = torch.compile(load_vocoder(vocoder_name="vocos", is_local=False, device="cpu"))'
-)
+# ------------------------------------------------------------
+# Vocos: initialize on CPU
+# Prevents PyTorch 2.11 meta-tensor issue
+# ------------------------------------------------------------
 
-# Use the locally downloaded vocab
-s = s.replace(
-    'vocab_path = hf_hub_download(config.name_or_path, filename="checkpoints/vocab.txt")',
-    'vocab_path = os.path.join(current_dir, "checkpoints", "vocab.txt")'
-)
+old_vocos = '''self.vocoder = torch.compile(load_vocoder(vocoder_name="vocos", is_local=False, device=device))'''
 
-open(p, "w").write(s)
+new_vocos = '''self.vocoder = torch.compile(load_vocoder(vocoder_name="vocos", is_local=False, device="cpu"))'''
 
-print("IndicF5 patches applied.")
+if old_vocos in s:
+    s = s.replace(old_vocos, new_vocos)
+    print("✓ Vocos CPU initialization patched")
+else:
+    print("⚠ Vocos line already patched or not found")
+
+# ------------------------------------------------------------
+# Vocab: use local vocab.txt
+# ------------------------------------------------------------
+
+old_vocab = '''vocab_path = hf_hub_download(config.name_or_path, filename="checkpoints/vocab.txt")'''
+
+new_vocab = '''vocab_path = os.path.join(current_dir, "checkpoints", "vocab.txt")'''
+
+if old_vocab in s:
+    s = s.replace(old_vocab, new_vocab)
+    print("✓ Local vocab path patched")
+else:
+    print("⚠ Vocab line already patched or not found")
+
+with open(p, "w") as f:
+    f.write(s)
+
+print("✓ IndicF5 patch complete")
+
 PY
 
-# ------------------------------------------------
-# 8. Verify
-# ------------------------------------------------
+# ============================================================
+# VERIFY
+# ============================================================
+
 echo ""
-echo "[8/8] Testing installation..."
+echo "=========================================="
+echo " VERIFYING INSTALLATION"
+echo "=========================================="
 
 python - <<'PY'
+
 import torch
 import torchaudio
 import transformers
+import vocos
 
 print("")
-print("==========================================")
-print(" Installation verification")
-print("==========================================")
-print("PyTorch:     ", torch.__version__)
-print("TorchAudio:  ", torchaudio.__version__)
-print("Transformers:", transformers.__version__)
-print("CUDA:        ", torch.cuda.is_available())
+print("PyTorch:      ", torch.__version__)
+print("TorchAudio:   ", torchaudio.__version__)
+print("Transformers: ", transformers.__version__)
+print("Vocos:        ", vocos.__version__)
+print("CUDA:         ", torch.cuda.is_available())
 
 if torch.cuda.is_available():
-    print("GPU:         ", torch.cuda.get_device_name(0))
-    print("VRAM:        ", round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 1), "GB")
 
-print("==========================================")
+    print("GPU:          ", torch.cuda.get_device_name(0))
+
+    print(
+        "VRAM:         ",
+        round(
+            torch.cuda.get_device_properties(0).total_memory / 1024**3,
+            1
+        ),
+        "GB"
+    )
+
+print("")
+
 PY
 
-echo ""
+# ============================================================
+# VERIFY FILES
+# ============================================================
+
 echo "=========================================="
-echo "        INDICF5 SETUP COMPLETE"
-echo "=========================================="
-echo ""
-echo "Model: /workspace/IndicF5"
-echo ""
-echo "Next:"
-echo "1. Upload your reference WAV"
-echo "2. Put it at:"
-echo "   /workspace/my_voice_indicf5.wav"
-echo ""
-echo "Then run your TTS script."
+echo " CHECKING MODEL FILES"
 echo "=========================================="
 
-SH
+ls -lh /workspace/IndicF5/model.safetensors
+ls -lh /workspace/IndicF5/checkpoints/vocab.txt
+ls -lh /workspace/IndicF5/model.py
 
-chmod +x /workspace/setup_indicf5.sh
+echo ""
+echo "=========================================="
+echo "       INDICF5 SETUP COMPLETE"
+echo "=========================================="
 
-/workspace/setup_indicf5.sh
+echo ""
+echo "Model:"
+echo "  /workspace/IndicF5"
+
+echo ""
+echo "Reference voice:"
+echo "  /workspace/my_voice_indicf5.wav"
+
+echo ""
+echo "Environment:"
+echo "  /workspace/indicf5_env"
+
+echo ""
+echo "Activate:"
+echo "  source /workspace/indicf5_env/bin/activate"
+
+echo ""
+echo "=========================================="
